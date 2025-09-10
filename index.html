@@ -66,7 +66,6 @@
     renderer.xr.enabled = true;
     document.body.appendChild(renderer.domElement);
 
-    // Soft light
     const light = new THREE.HemisphereLight(0xffffff, 0x444444, 0.85);
     scene.add(light);
 
@@ -121,29 +120,30 @@
 
     // ---------- Rope as 3D tube (TubeGeometry) ----------
     class RopeTube {
-      constructor(getStartFn, getEndFn, color = 0xffffff, segments = 24, radius = 0.03, radialSegments = 12, showGuide = true) {
+      constructor(getStartFn, getEndFn, color, segments, radius, radialSegments, showGuide) {
+        // defaults (avoid default params for maximum compatibility)
         this.getStartFn = getStartFn;
         this.getEndFn = getEndFn;
-        this.segments = segments;
-        this.radius = radius;
-        this.radialSegments = radialSegments;
-        this.showGuide = showGuide;
+        this.segments = (typeof segments === 'number') ? segments : 24;
+        this.radius = (typeof radius === 'number') ? radius : 0.03;
+        this.radialSegments = (typeof radialSegments === 'number') ? radialSegments : 12;
+        this.showGuide = !!showGuide;
+        if (typeof color !== 'number') color = 0xffffff;
 
-        this.points = new Array(segments + 1).fill(0).map(() => new THREE.Vector3());
+        this.points = new Array(this.segments + 1).fill(0).map(function(){ return new THREE.Vector3(); });
         this.curve = new THREE.CatmullRomCurve3(this.points, false, 'catmullrom', 0.25);
-        this.geom = new THREE.TubeGeometry(this.curve, Math.max(8, segments * 3), radius, radialSegments, false);
-        this.mat  = new THREE.MeshStandardMaterial({ color, metalness: 0.2, roughness: 0.55, emissive: 0x222222, side: THREE.DoubleSide });
+        this.geom = new THREE.TubeGeometry(this.curve, Math.max(8, this.segments * 3), this.radius, this.radialSegments, false);
+        this.mat  = new THREE.MeshStandardMaterial({ color: color, metalness: 0.2, roughness: 0.55, emissive: 0x222222, side: THREE.DoubleSide });
         this.mesh = new THREE.Mesh(this.geom, this.mat);
         this.mesh.renderOrder = 1;
         scene.add(this.mesh);
 
-        // optional visible centerline for debugging/visibility
-        this.guidePositions = new Float32Array((segments + 1) * 3);
+        this.guidePositions = new Float32Array((this.segments + 1) * 3);
         this.guideGeom = new THREE.BufferGeometry();
         this.guideGeom.setAttribute('position', new THREE.BufferAttribute(this.guidePositions, 3));
-        this.guideMat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.9 });
+        this.guideMat = new THREE.LineBasicMaterial({ color: color, transparent: true, opacity: 0.9 });
         this.guide = new THREE.Line(this.guideGeom, this.guideMat);
-        this.guide.visible = !!showGuide;
+        this.guide.visible = this.showGuide;
         scene.add(this.guide);
 
         this._prevY = null;
@@ -153,7 +153,6 @@
       }
 
       setGuideVisible(v){ this.guide.visible = !!v; }
-
       get amplitude() { return this._amp; }
 
       update(dt) {
@@ -163,7 +162,7 @@
         this.getEndFn(end);
 
         const curY = start.y;
-        if (this._prevY == null) this._prevY = curY;
+        if (this._prevY === null) this._prevY = curY;
         const vy = (curY - this._prevY) / Math.max(dt, 1e-4);
         this._prevY = curY;
         this._velY = THREE.MathUtils.lerp(this._velY, vy, 0.2);
@@ -183,7 +182,6 @@
           const decay = (1 - t) * 1.0 + 0.2;
           const w = Math.sin((t * 2 * Math.PI * 1.3) - this._phase) * this._amp * decay;
           p.y += sag + w;
-          // update guide buffer too
           const idx = i * 3;
           this.guidePositions[idx]   = p.x;
           this.guidePositions[idx+1] = p.y;
@@ -191,7 +189,6 @@
         }
         this.guideGeom.attributes.position.needsUpdate = true;
 
-        // rebuild tube geometry
         this.curve.points = this.points;
         this.geom.dispose();
         this.geom = new THREE.TubeGeometry(this.curve, Math.max(8, this.segments * 3), this.radius, this.radialSegments, false);
@@ -199,17 +196,25 @@
       }
 
       dispose() {
-        scene.remove(this.mesh); scene.remove(this.guide);
-        this.geom.dispose(); this.mat.dispose();
-        this.guideGeom.dispose(); this.guideMat.dispose();
+        scene.remove(this.mesh);
+        scene.remove(this.guide);
+        this.geom.dispose();
+        this.mat.dispose();
+        this.guideGeom.dispose();
+        this.guideMat.dispose();
       }
     }
 
     // helpers
-    const _tmp = new THREE.Vector3();
     function getControllerWorldPos(ctrl, out) { ctrl.getWorldPosition(out); return out; }
     function getHandJointWorldPos(hand, jointName, out) {
-      if (!hand) return null; const j = hand.joints?.[jointName]; if (!j) return null; j.getWorldPosition(out); return out;
+      if (!hand) return null;
+      const joints = hand.joints;
+      if (!joints) return null;
+      const j = joints[jointName];
+      if (!j) return null;
+      j.getWorldPosition(out);
+      return out;
     }
 
     let leftRope = null;
@@ -227,7 +232,7 @@
     const forceDebug = url.searchParams.has('debug');
     let useFallbackGround = false;
     let noHitFrames = 0;
-    const NO_HIT_THRESHOLD = 30; // ~0.5s
+    const NO_HIT_THRESHOLD = 30;
 
     let gridHelper = null;
     function enableFallbackGround() {
@@ -248,9 +253,7 @@
       camera.getWorldDirection(camDir);
       const denom = camDir.y;
       let t = 0;
-      if (Math.abs(denom) > 1e-3) {
-        t = (0 - cp.y) / denom;
-      }
+      if (Math.abs(denom) > 1e-3) t = (0 - cp.y) / denom;
       if (!isFinite(t) || t <= 0) t = 1.5;
       const pos = cp.clone().addScaledVector(camDir, t);
       reticle.visible = true;
@@ -261,29 +264,14 @@
     // ---------- Session events ----------
     async function onSessionStart(session) {
       const xr = renderer.xr;
-      try {
-        localSpace = await session.requestReferenceSpace('local-floor').catch(()=>xr.getReferenceSpace());
-      } catch {
-        localSpace = xr.getReferenceSpace();
-      }
-      try {
-        viewerSpace = await session.requestReferenceSpace('viewer');
-      } catch {
-        viewerSpace = null;
-      }
-
-      try {
-        if (session.requestHitTestSource && viewerSpace) {
-          hitTestSource = await session.requestHitTestSource({ space: viewerSpace });
-        }
-      } catch (e) {
-        hitTestSource = null;
-      }
+      try { localSpace = await session.requestReferenceSpace('local-floor'); } catch (e) { localSpace = xr.getReferenceSpace(); }
+      try { viewerSpace = await session.requestReferenceSpace('viewer'); } catch (e) { viewerSpace = null; }
+      try { if (session.requestHitTestSource && viewerSpace) hitTestSource = await session.requestHitTestSource({ space: viewerSpace }); } catch (e) { hitTestSource = null; }
 
       setStatus('PLACE STATION');
       hintEl.style.display = 'block';
 
-      const onSelect = () => {
+      const onSelect = function () {
         if (!placed && reticle.visible) {
           if (reticle.matrixAutoUpdate) {
             baseRoot.position.copy(reticle.position);
@@ -299,31 +287,25 @@
           hintEl.style.display = 'none';
 
           leftRope = new RopeTube(
-            (out)=>{ const p = getHandJointWorldPos(hand0, 'wrist', out); return p ? p : getControllerWorldPos(controller0, out); },
-            (out)=>anchorLeft.getWorldPosition(out),
+            function(out){ var p = getHandJointWorldPos(hand0, 'wrist', out); return p ? p : getControllerWorldPos(controller0, out); },
+            function(out){ return anchorLeft.getWorldPosition(out); },
             0x99bbff, 24, 0.03, 12, true
-          ); return p ? p : getControllerWorldPos(controller0, out); },
-            (out)=>anchorLeft.getWorldPosition(out),
-            0x99bbff, 24, 0.018, 8
           );
           rightRope = new RopeTube(
-            (out)=>{ const p = getHandJointWorldPos(hand1, 'wrist', out); return p ? p : getControllerWorldPos(controller1, out); },
-            (out)=>anchorRight.getWorldPosition(out),
+            function(out){ var p = getHandJointWorldPos(hand1, 'wrist', out); return p ? p : getControllerWorldPos(controller1, out); },
+            function(out){ return anchorRight.getWorldPosition(out); },
             0xff99aa, 24, 0.03, 12, true
-          ); return p ? p : getControllerWorldPos(controller1, out); },
-            (out)=>anchorRight.getWorldPosition(out),
-            0xff99aa, 24, 0.018, 8
           );
 
-          setTimeout(()=>{ workoutActive = true; setStatus('WORKOUT'); }, 800);
+          setTimeout(function(){ workoutActive = true; setStatus('WORKOUT'); }, 800);
         }
       };
 
       controller0.addEventListener('select', onSelect);
       controller1.addEventListener('select', onSelect);
-      window.addEventListener('keydown', (e)=>{ if (e.key === 'Enter') onSelect(); });
+      window.addEventListener('keydown', function(e){ if (e.key === 'Enter') onSelect(); });
 
-      session.addEventListener('end', () => {
+      session.addEventListener('end', function(){
         hitTestSource = null; viewerSpace = null; localSpace = null; placed = false; workoutActive = false; timeLeft = 60; score = 0;
         baseRoot.visible = false; setStatus('READY');
         if (leftRope) { leftRope.dispose(); leftRope = null; }
@@ -334,17 +316,12 @@
       });
 
       // quick toggle for guide lines
-      window.addEventListener('keydown', (e)=>{
-        if (e.key.toLowerCase() === 'g') {
+      window.addEventListener('keydown', function(e){
+        var k = (e.key || '').toLowerCase();
+        if (k === 'g') {
           if (leftRope) leftRope.setGuideVisible(!leftRope.guide.visible);
           if (rightRope) rightRope.setGuideVisible(!rightRope.guide.visible);
         }
-      });
-        if (leftRope) { leftRope.dispose(); leftRope = null; }
-        if (rightRope){ rightRope.dispose(); rightRope = null; }
-        if (gridHelper){ scene.remove(gridHelper); gridHelper = null; }
-        reticle.visible = false; reticle.matrixAutoUpdate = false;
-        hintEl.style.display = 'block';
       });
 
       if (forceDebug) enableFallbackGround();
@@ -352,7 +329,7 @@
 
     // ---------- Render loop ----------
     let lastTime = 0;
-    renderer.setAnimationLoop((time, frame) => {
+    renderer.setAnimationLoop(function(time, frame){
       const dt = Math.min(0.05, (time - lastTime) / 1000) || 0.016;
       lastTime = time;
 
@@ -375,9 +352,7 @@
         }
       }
 
-      if (!placed && useFallbackGround) {
-        updateFallbackReticle();
-      }
+      if (!placed && useFallbackGround) updateFallbackReticle();
 
       if (leftRope) leftRope.update(dt);
       if (rightRope) rightRope.update(dt);
@@ -402,20 +377,20 @@
 
     // ---------- Start flow ----------
     let arButton = null;
-    startBtn.addEventListener('click', () => {
+    startBtn.addEventListener('click', function(){
       if (!arButton) {
         arButton = ARButton.createButton(renderer, {
-          optionalFeatures: ['hit-test','dom-overlay','hand-tracking'],
+          optionalFeatures: ['hit-test', 'dom-overlay', 'hand-tracking'],
           domOverlay: { root: document.body }
         });
         document.getElementById('footer').appendChild(arButton);
       }
       startOverlay.style.display = 'none';
-      renderer.xr.addEventListener('sessionstart', () => onSessionStart(renderer.xr.getSession()));
+      renderer.xr.addEventListener('sessionstart', function(){ onSessionStart(renderer.xr.getSession()); });
     });
 
     // ---------- Resize ----------
-    window.addEventListener('resize', () => {
+    window.addEventListener('resize', function(){
       camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
