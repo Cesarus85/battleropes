@@ -88,8 +88,14 @@
         <p>Initializing AR Session...</p>
     </div>
 
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r158/three.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.158.0/examples/js/webxr/VRButton.js"></script>
-    <script src="js/battleRopes.js"></script>
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.skypack.dev/three@0.158.0",
+            "three/addons/": "https://cdn.skypack.dev/three@0.158.0/examples/jsm/"
+        }
+    }
+    </script>
+    <script type="module" src="js/battleRopes.js"></script>
 </body>
 </html>
