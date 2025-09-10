@@ -28,6 +28,7 @@
       <div class="pill" id="timer">00:60</div>
       <div class="pill" id="score">Score: 0</div>
       <div class="pill" id="amp">Amp: 0.00</div>
+      <div class="pill" id="phys">R:0.12 D:2.0 I:0.06</div>
     </div>
     <div></div>
     <div id="footer"></div>
@@ -53,6 +54,23 @@
     const timerEl  = document.getElementById('timer');
     const scoreEl  = document.getElementById('score');
     const ampEl    = document.getElementById('amp');
+    const physEl   = document.getElementById('phys');
+
+    // Live-tunable rope params
+    const Params = {
+      radius: 0.12,          // meters (diameter ~24 cm)
+      radialSegments: 16,
+      decay: 2.0,            // amplitude decay per second (higher = heavier)
+      impulseGain: 0.06,     // how strongly hand accel adds amplitude
+      maxAmp: 0.45,
+      waveSpeed: 8.0,        // higher = faster waves
+      sagK: 0.12             // sag factor (0.1..0.15)
+    };
+
+    function updatePhysHUD(){
+      if (physEl) physEl.textContent = `R:${Params.radius.toFixed(2)} D:${Params.decay.toFixed(1)} I:${Params.impulseGain.toFixed(2)}`;
+    }
+    updatePhysHUD();
     const hintEl   = document.getElementById('hint');
     const startOverlay = document.getElementById('startOverlay');
     const startBtn = document.getElementById('startBtn');
@@ -121,19 +139,17 @@
     // ---------- Rope as 3D tube (TubeGeometry) ----------
     class RopeTube {
       constructor(getStartFn, getEndFn, color, segments, radius, radialSegments, showGuide) {
-        // defaults (avoid default params for maximum compatibility)
         this.getStartFn = getStartFn;
         this.getEndFn = getEndFn;
         this.segments = (typeof segments === 'number') ? segments : 24;
-        this.radius = (typeof radius === 'number') ? radius : 0.06; // thicker rope (~6 cm radius)
-        this.radialSegments = (typeof radialSegments === 'number') ? radialSegments : 14;
+        this.radialSegments = (typeof radialSegments === 'number') ? radialSegments : Params.radialSegments;
         this.showGuide = !!showGuide;
         if (typeof color !== 'number') color = 0xffffff;
 
         this.points = new Array(this.segments + 1).fill(0).map(function(){ return new THREE.Vector3(); });
         this.curve = new THREE.CatmullRomCurve3(this.points, false, 'catmullrom', 0.25);
-        this.geom = new THREE.TubeGeometry(this.curve, Math.max(8, this.segments * 3), this.radius, this.radialSegments, false);
-        this.mat  = new THREE.MeshStandardMaterial({ color: color, metalness: 0.2, roughness: 0.55, emissive: 0x222222, side: THREE.DoubleSide });
+        this.geom = new THREE.TubeGeometry(this.curve, Math.max(8, this.segments * 3), Params.radius, this.radialSegments, false);
+        this.mat  = new THREE.MeshStandardMaterial({ color: color, metalness: 0.15, roughness: 0.6, emissive: 0x202020, side: THREE.DoubleSide });
         this.mesh = new THREE.Mesh(this.geom, this.mat);
         this.mesh.renderOrder = 1;
         scene.add(this.mesh);
@@ -146,10 +162,13 @@
         this.guide.visible = this.showGuide;
         scene.add(this.guide);
 
-        this._prevY = null;
-        this._velY = 0;
-        this._amp = 0;
-        this._phase = 0;
+        // Kinematics for impulse from hand acceleration
+        this._hasPrev = false;
+        this._prevPos = new THREE.Vector3();
+        this._prevVel = new THREE.Vector3();
+
+        this._amp = 0;     // wave amplitude driver
+        this._phase = 0;   // wave phase
       }
 
       setGuideVisible(v){ this.guide.visible = !!v; }
@@ -161,27 +180,36 @@
         this.getStartFn(start);
         this.getEndFn(end);
 
-        const curY = start.y;
-        if (this._prevY === null) this._prevY = curY;
-        const vy = (curY - this._prevY) / Math.max(dt, 1e-4);
-        this._prevY = curY;
-        this._velY = THREE.MathUtils.lerp(this._velY, vy, 0.18);
-        // Heavier-feel: small impulse + stronger damping
-        const impulse = Math.min(0.12, Math.abs(this._velY) * 0.02);
-        this._amp = Math.max(0, this._amp - 3.5 * dt); // fast decay
-        this._amp = Math.min(0.25, this._amp + impulse);
-        this._phase += dt * 5.0;
+        // Build acceleration-based impulse from hand movement (3D)
+        if (!this._hasPrev) {
+          this._prevPos.copy(start);
+          this._prevVel.set(0,0,0);
+          this._hasPrev = true;
+        }
+        const vel = new THREE.Vector3().subVectors(start, this._prevPos);
+        vel.multiplyScalar(1/Math.max(dt, 1e-4));
+        const acc = new THREE.Vector3().subVectors(vel, this._prevVel);
+        acc.multiplyScalar(1/Math.max(dt, 1e-4));
+        const accelMag = acc.length();
+        this._prevPos.copy(start);
+        this._prevVel.copy(vel);
 
+        // Heavier feel: controlled impulse + decay
+        this._amp = Math.max(0, this._amp - Params.decay * dt);
+        this._amp = Math.min(Params.maxAmp, this._amp + accelMag * Params.impulseGain);
+        this._phase += dt * Params.waveSpeed;
+
+        // construct rope points with sag + traveling wave
         const dir = new THREE.Vector3().subVectors(end, start);
         const len = dir.length();
-        if (len < 1e-5) return;
+        if (len < 1e-4) return;
 
         for (let i = 0; i <= this.segments; i++) {
           const t = i / this.segments;
           const p = this.points[i];
           p.copy(start).addScaledVector(dir, t);
-          const sag = -0.12 * len * t * (1 - t);
-          const decay = (1 - t) * 1.0 + 0.2;
+          const sag = -Params.sagK * len * t * (1 - t);
+          const decay = (1 - t) * 1.0 + 0.2; // stronger near hand
           const w = Math.sin((t * 2 * Math.PI * 1.3) - this._phase) * this._amp * decay;
           p.y += sag + w;
           const idx = i * 3;
@@ -191,9 +219,12 @@
         }
         this.guideGeom.attributes.position.needsUpdate = true;
 
+        // rebuild tube geometry with live radius settings
         this.curve.points = this.points;
         this.geom.dispose();
-        this.geom = new THREE.TubeGeometry(this.curve, Math.max(8, this.segments * 3), this.radius, this.radialSegments, false);
+        const r = Math.max(0.005, Params.radius);
+        const rs = Math.max(6, Params.radialSegments|0);
+        this.geom = new THREE.TubeGeometry(this.curve, Math.max(8, this.segments * 3), r, rs, false);
         this.mesh.geometry = this.geom;
       }
 
@@ -318,6 +349,17 @@
       controller0.addEventListener('select', onSelect);
       controller1.addEventListener('select', onSelect);
       window.addEventListener('keydown', function(e){ if (e.key === 'Enter') onSelect(); });
+
+      // Runtime tuning shortcuts (desktop/emulator helpful)
+      window.addEventListener('keydown', function(e){
+        const k = (e.key||'').toLowerCase();
+        if (k === ']') { Params.radius = Math.min(0.20, Params.radius + 0.01); updatePhysHUD(); }
+        if (k === '[') { Params.radius = Math.max(0.01, Params.radius - 0.01); updatePhysHUD(); }
+        if (k === 'arrowup')   { Params.impulseGain = Math.min(0.20, Params.impulseGain + 0.01); updatePhysHUD(); }
+        if (k === 'arrowdown') { Params.impulseGain = Math.max(0.01, Params.impulseGain - 0.01); updatePhysHUD(); }
+        if (k === 'arrowright'){ Params.decay = Math.min(8.0, Params.decay + 0.2); updatePhysHUD(); }
+        if (k === 'arrowleft') { Params.decay = Math.max(0.2, Params.decay - 0.2); updatePhysHUD(); }
+      });
 
       session.addEventListener('end', function(){
         hitTestSource = null; viewerSpace = null; localSpace = null; placed = false; workoutActive = false; timeLeft = 60; score = 0;
