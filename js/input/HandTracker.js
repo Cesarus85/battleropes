@@ -1,5 +1,3 @@
-// js/input/HandTracker.js
-
 export class HandTracker {
     constructor() {
         this.session = null;
