@@ -30,7 +30,7 @@ export class SceneManager {
             canvas: this.canvas,
             alpha: true,
             antialias: true,
-            logarithmicDepthBuffer: true
+            xrCompatible: true  // WICHTIG für WebXR!
         });
         
         this.renderer.setPixelRatio(window.devicePixelRatio);
@@ -38,6 +38,9 @@ export class SceneManager {
         this.renderer.outputEncoding = THREE.sRGBEncoding;
         this.renderer.shadowMap.enabled = true;
         this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        
+        // XR aktivieren
+        this.renderer.xr.enabled = true;
     }
 
     setupLights() {
