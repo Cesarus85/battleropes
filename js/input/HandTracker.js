@@ -82,6 +82,19 @@ export class HandTracker {
         }
     }
 
+    getHandSpeed(handedness) {
+        return this.hands[handedness].velocity.length();
+    }
+
+    getHandAcceleration(handedness) {
+        return this.hands[handedness].acceleration.length();
+    }
+
+    isHandDetected(handedness) {
+        return this.hands[handedness].detected;
+    }
+}
+
     update(frame) {
         if (!frame || !this.session) return this.hands;
 
