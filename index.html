@@ -88,7 +88,13 @@
         <p>Initializing AR Session...</p>
     </div>
 
-    <script src="https://unpkg.com/three@0.158.0/build/three.min.js"></script>
-    <script src="js/battleRopes.js"></script>
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.158.0/build/three.module.js"
+        }
+    }
+    </script>
+    <script type="module" src="js/battleRopes.js"></script>
 </body>
 </html>

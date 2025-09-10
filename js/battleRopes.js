@@ -1,3 +1,5 @@
+import * as THREE from 'three';
+
 class BattleRopesAR {
     constructor() {
         this.scene = null;
@@ -48,7 +50,7 @@ class BattleRopesAR {
         });
         this.renderer.setSize(window.innerWidth, window.innerHeight);
         this.renderer.setPixelRatio(window.devicePixelRatio);
-        this.renderer.outputEncoding = THREE.sRGBEncoding;
+        this.renderer.outputColorSpace = THREE.SRGBColorSpace;
         this.renderer.shadowMap.enabled = true;
         this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
         this.renderer.xr.enabled = true;
