@@ -67,7 +67,7 @@
     document.body.appendChild(renderer.domElement);
 
     // Soft light
-    const light = new THREE.HemisphereLight(0xffffff, 0x444444, 0.7);
+    const light = new THREE.HemisphereLight(0xffffff, 0x444444, 0.85);
     scene.add(light);
 
     // ---------- Placement / hit test ----------
@@ -119,28 +119,39 @@
     if (hand0) scene.add(hand0);
     if (hand1) scene.add(hand1);
 
-    // ---------- Simple rope as dynamic line ----------
-    class RopeLine {
-      constructor(getStartFn, getEndFn, color = 0xffffff, segments = 32) {
+    // ---------- Rope as 3D tube (TubeGeometry) ----------
+    class RopeTube {
+      constructor(getStartFn, getEndFn, color = 0xffffff, segments = 24, radius = 0.018, radialSegments = 8) {
         this.getStartFn = getStartFn;
         this.getEndFn = getEndFn;
         this.segments = segments;
-        this.positions = new Float32Array((segments + 1) * 3);
-        this.geom = new THREE.BufferGeometry();
-        this.geom.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
-        this.line = new THREE.Line(this.geom, new THREE.LineBasicMaterial({ color }));
-        scene.add(this.line);
+        this.radius = radius;
+        this.radialSegments = radialSegments;
+
+        // points used for the curve; reused each frame
+        this.points = new Array(segments + 1).fill(0).map(() => new THREE.Vector3());
+        this.curve = new THREE.CatmullRomCurve3(this.points, false, 'catmullrom', 0.25);
+        this.geom = new THREE.TubeGeometry(this.curve, segments * 2, radius, radialSegments, false);
+        this.mat  = new THREE.MeshStandardMaterial({ color, metalness: 0.15, roughness: 0.6 });
+        this.mesh = new THREE.Mesh(this.geom, this.mat);
+        scene.add(this.mesh);
+
         this._prevY = null;
         this._velY = 0;
         this._amp = 0;
         this._phase = 0;
       }
+
       get amplitude() { return this._amp; }
+
       update(dt) {
+        // sample start/end
         const start = new THREE.Vector3();
         const end = new THREE.Vector3();
         this.getStartFn(start);
         this.getEndFn(end);
+
+        // vertical velocity based amplitude
         const curY = start.y;
         if (this._prevY == null) this._prevY = curY;
         const vy = (curY - this._prevY) / Math.max(dt, 1e-4);
@@ -149,22 +160,33 @@
         const add = THREE.MathUtils.clamp(Math.abs(this._velY) * 0.08, 0, 0.25);
         this._amp = Math.min(0.35, this._amp * Math.pow(0.985, dt * 60) + add);
         this._phase += dt * 6.0;
+
+        // construct rope centerline points with sag + traveling wave
         const dir = new THREE.Vector3().subVectors(end, start);
         const len = dir.length();
         if (len < 1e-5) return;
+
         for (let i = 0; i <= this.segments; i++) {
           const t = i / this.segments;
-          const p = new THREE.Vector3().copy(start).addScaledVector(dir, t);
+          const p = this.points[i];
+          p.copy(start).addScaledVector(dir, t);
           const sag = -0.12 * len * t * (1 - t);
           const decay = (1 - t) * 1.0 + 0.2;
           const w = Math.sin((t * 2 * Math.PI * 1.3) - this._phase) * this._amp * decay;
           p.y += sag + w;
-          const idx = i * 3;
-          this.positions[idx]   = p.x;
-          this.positions[idx+1] = p.y;
-          this.positions[idx+2] = p.z;
         }
-        this.geom.attributes.position.needsUpdate = true;
+
+        // rebuild tube geometry (segments kept small for perf)
+        this.curve.points = this.points;
+        this.geom.dispose();
+        this.geom = new THREE.TubeGeometry(this.curve, this.segments * 2, this.radius, this.radialSegments, false);
+        this.mesh.geometry = this.geom;
+      }
+
+      dispose() {
+        scene.remove(this.mesh);
+        this.geom.dispose();
+        this.mat.dispose();
       }
     }
 
@@ -185,7 +207,7 @@
 
     function setStatus(s) { statusEl.textContent = 'STATUS: ' + s; }
 
-    // ---------- Emulator-friendly fallback (no camera feed, no hit results) ----------
+    // ---------- Emulator-friendly fallback ----------
     const url = new URL(location.href);
     const forceDebug = url.searchParams.has('debug');
     let useFallbackGround = false;
@@ -196,8 +218,7 @@
     function enableFallbackGround() {
       if (useFallbackGround) return;
       useFallbackGround = true;
-      reticle.matrixAutoUpdate = true; // we'll position it manually
-      // Simple ground grid for orientation (y=0 plane)
+      reticle.matrixAutoUpdate = true;
       gridHelper = new THREE.GridHelper(6, 12, 0x666666, 0x333333);
       gridHelper.position.y = 0;
       scene.add(gridHelper);
@@ -205,18 +226,17 @@
       ampEl.textContent = 'Amp: 0.00';
     }
 
-    // Position reticle by casting camera forward onto y=0 plane
     const camDir = new THREE.Vector3();
     function updateFallbackReticle() {
       if (placed) return;
       const cp = camera.position.clone();
-      camera.getWorldDirection(camDir); // -Z forward
+      camera.getWorldDirection(camDir);
       const denom = camDir.y;
       let t = 0;
       if (Math.abs(denom) > 1e-3) {
-        t = (0 - cp.y) / denom; // intersection with y=0
+        t = (0 - cp.y) / denom;
       }
-      if (!isFinite(t) || t <= 0) t = 1.5; // 1.5m straight ahead
+      if (!isFinite(t) || t <= 0) t = 1.5;
       const pos = cp.clone().addScaledVector(camDir, t);
       reticle.visible = true;
       reticle.position.copy(pos);
@@ -227,7 +247,6 @@
     async function onSessionStart(session) {
       const xr = renderer.xr;
       try {
-        // prefer local-floor if available
         localSpace = await session.requestReferenceSpace('local-floor').catch(()=>xr.getReferenceSpace());
       } catch {
         localSpace = xr.getReferenceSpace();
@@ -238,7 +257,6 @@
         viewerSpace = null;
       }
 
-      // try hit test source (may fail in emulator)
       try {
         if (session.requestHitTestSource && viewerSpace) {
           hitTestSource = await session.requestHitTestSource({ space: viewerSpace });
@@ -265,15 +283,15 @@
           setStatus('READY — STARTING');
           hintEl.style.display = 'none';
 
-          leftRope = new RopeLine(
+          leftRope = new RopeTube(
             (out)=>{ const p = getHandJointWorldPos(hand0, 'wrist', out); return p ? p : getControllerWorldPos(controller0, out); },
             (out)=>anchorLeft.getWorldPosition(out),
-            0x99bbff, 40
+            0x99bbff, 24, 0.018, 8
           );
-          rightRope = new RopeLine(
+          rightRope = new RopeTube(
             (out)=>{ const p = getHandJointWorldPos(hand1, 'wrist', out); return p ? p : getControllerWorldPos(controller1, out); },
             (out)=>anchorRight.getWorldPosition(out),
-            0xff99aa, 40
+            0xff99aa, 24, 0.018, 8
           );
 
           setTimeout(()=>{ workoutActive = true; setStatus('WORKOUT'); }, 800);
@@ -282,20 +300,18 @@
 
       controller0.addEventListener('select', onSelect);
       controller1.addEventListener('select', onSelect);
-      // Emulator convenience: press ENTER to place
       window.addEventListener('keydown', (e)=>{ if (e.key === 'Enter') onSelect(); });
 
       session.addEventListener('end', () => {
         hitTestSource = null; viewerSpace = null; localSpace = null; placed = false; workoutActive = false; timeLeft = 60; score = 0;
         baseRoot.visible = false; setStatus('READY');
-        if (leftRope) { scene.remove(leftRope.line); leftRope = null; }
-        if (rightRope){ scene.remove(rightRope.line); rightRope = null; }
+        if (leftRope) { leftRope.dispose(); leftRope = null; }
+        if (rightRope){ rightRope.dispose(); rightRope = null; }
         if (gridHelper){ scene.remove(gridHelper); gridHelper = null; }
         reticle.visible = false; reticle.matrixAutoUpdate = false;
         hintEl.style.display = 'block';
       });
 
-      // Force fallback if requested via URL
       if (forceDebug) enableFallbackGround();
     }
 
@@ -353,7 +369,6 @@
     let arButton = null;
     startBtn.addEventListener('click', () => {
       if (!arButton) {
-        // Make hit-test optional so emulator/unsupported devices can still start
         arButton = ARButton.createButton(renderer, {
           optionalFeatures: ['hit-test','dom-overlay','hand-tracking'],
           domOverlay: { root: document.body }
