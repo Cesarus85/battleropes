@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { VerletPhysicsEngine } from './verletPhysics.js';
 
 class BattleRopesAR {
     constructor() {
@@ -13,6 +14,17 @@ class BattleRopesAR {
         this.isXRSupported = false;
         this.isSessionActive = false;
         
+        // Physics and ropes
+        this.physicsEngine = null;
+        this.leftRope = null;
+        this.rightRope = null;
+        this.ropeLength = 2.0;
+        this.ropeSegments = 25;
+        this.anchorHeight = 1.5;
+        
+        // Clock for physics timing
+        this.clock = new THREE.Clock();
+        
         this.init();
     }
     
@@ -22,6 +34,7 @@ class BattleRopesAR {
         this.setupScene();
         this.setupCamera();
         this.setupLighting();
+        this.setupPhysics();
         this.setupEventListeners();
         this.updateStatus();
         
@@ -92,6 +105,97 @@ class BattleRopesAR {
         const pointLight = new THREE.PointLight(0xff6b00, 0.3, 10);
         pointLight.position.set(0, 2, 0);
         this.scene.add(pointLight);
+    }
+    
+    setupPhysics() {
+        this.physicsEngine = new VerletPhysicsEngine(this.scene);
+        this.physicsEngine.setGravity(0, -9.81, 0);
+    }
+    
+    createBattleRopes() {
+        // Remove existing ropes if any
+        if (this.leftRope) this.removeRope(this.leftRope);
+        if (this.rightRope) this.removeRope(this.rightRope);
+        
+        // Create anchor points (fixed points where ropes are attached)
+        const leftAnchor = { x: -0.3, y: this.anchorHeight, z: 0 };
+        const rightAnchor = { x: 0.3, y: this.anchorHeight, z: 0 };
+        
+        // Create left rope
+        this.leftRope = this.physicsEngine.createRope(
+            leftAnchor.x, leftAnchor.y, leftAnchor.z,
+            leftAnchor.x, leftAnchor.y - this.ropeLength, leftAnchor.z,
+            this.ropeSegments,
+            0.05 // mass per segment
+        );
+        
+        // Create right rope  
+        this.rightRope = this.physicsEngine.createRope(
+            rightAnchor.x, rightAnchor.y, rightAnchor.z,
+            rightAnchor.x, rightAnchor.y - this.ropeLength, rightAnchor.z,
+            this.ropeSegments,
+            0.05 // mass per segment
+        );
+        
+        // Pin the top particles (anchor points)
+        this.leftRope.particles[0].pin();
+        this.rightRope.particles[0].pin();
+        
+        // Add visual anchors
+        this.addAnchorVisuals(leftAnchor, rightAnchor);
+        
+        console.log('Battle ropes created with', this.ropeSegments, 'segments each');
+    }
+    
+    addAnchorVisuals(leftAnchor, rightAnchor) {
+        const anchorGeometry = new THREE.CylinderGeometry(0.05, 0.05, 0.1, 8);
+        const anchorMaterial = new THREE.MeshLambertMaterial({ color: 0x333333 });
+        
+        // Left anchor
+        const leftAnchorMesh = new THREE.Mesh(anchorGeometry, anchorMaterial);
+        leftAnchorMesh.position.set(leftAnchor.x, leftAnchor.y, leftAnchor.z);
+        leftAnchorMesh.rotation.z = Math.PI / 2;
+        this.scene.add(leftAnchorMesh);
+        
+        // Right anchor
+        const rightAnchorMesh = new THREE.Mesh(anchorGeometry, anchorMaterial);
+        rightAnchorMesh.position.set(rightAnchor.x, rightAnchor.y, rightAnchor.z);
+        rightAnchorMesh.rotation.z = Math.PI / 2;
+        this.scene.add(rightAnchorMesh);
+        
+        // Add a crossbeam connecting the anchors
+        const beamGeometry = new THREE.CylinderGeometry(0.02, 0.02, 0.6, 8);
+        const beamMaterial = new THREE.MeshLambertMaterial({ color: 0x666666 });
+        const beam = new THREE.Mesh(beamGeometry, beamMaterial);
+        beam.position.set(0, leftAnchor.y, leftAnchor.z);
+        beam.rotation.z = Math.PI / 2;
+        this.scene.add(beam);
+    }
+    
+    removeRope(rope) {
+        if (!rope) return;
+        
+        // Remove visual elements
+        rope.particles.forEach(particle => {
+            if (particle.mesh) {
+                this.scene.remove(particle.mesh);
+            }
+        });
+        
+        if (rope.visual) {
+            this.scene.remove(rope.visual);
+        }
+        
+        // Remove from physics engine
+        rope.particles.forEach(particle => {
+            const index = this.physicsEngine.particles.indexOf(particle);
+            if (index > -1) this.physicsEngine.particles.splice(index, 1);
+        });
+        
+        rope.constraints.forEach(constraint => {
+            const index = this.physicsEngine.constraints.indexOf(constraint);
+            if (index > -1) this.physicsEngine.constraints.splice(index, 1);
+        });
     }
     
     setupControllers() {
@@ -197,6 +301,7 @@ class BattleRopesAR {
             this.isSessionActive = true;
             
             this.setupControllers();
+            this.createBattleRopes();
             
             this.xrSession.addEventListener('end', () => {
                 this.onXRSessionEnd();
@@ -260,31 +365,89 @@ class BattleRopesAR {
     }
     
     render() {
+        const deltaTime = this.clock.getDelta();
+        
         if (this.isSessionActive) {
             this.updateControllers();
+            
+            // Update physics
+            if (this.physicsEngine) {
+                this.physicsEngine.update(deltaTime);
+                this.updateRopeVisuals();
+            }
         }
         
         this.renderer.render(this.scene, this.camera);
     }
     
+    updateRopeVisuals() {
+        // Update rope line visuals
+        if (this.leftRope && this.leftRope.visual) {
+            const points = this.leftRope.particles.map(p => p.position.clone());
+            this.leftRope.visual.geometry.setFromPoints(points);
+        }
+        
+        if (this.rightRope && this.rightRope.visual) {
+            const points = this.rightRope.particles.map(p => p.position.clone());
+            this.rightRope.visual.geometry.setFromPoints(points);
+        }
+    }
+    
     updateControllers() {
         this.controllers.forEach((controller, index) => {
             if (controller.userData && controller.userData.connected) {
-                // Here we'll add hand tracking and rope physics later
-                // For now, just log position for debugging
                 const position = controller.position;
-                const rotation = controller.rotation;
+                const handedness = controller.userData.handedness;
                 
                 // Store previous position for velocity calculation
                 if (!controller.userData.previousPosition) {
                     controller.userData.previousPosition = position.clone();
                     controller.userData.velocity = new THREE.Vector3();
+                    controller.userData.acceleration = new THREE.Vector3();
                 } else {
-                    controller.userData.velocity.subVectors(position, controller.userData.previousPosition);
+                    const newVelocity = new THREE.Vector3().subVectors(position, controller.userData.previousPosition);
+                    controller.userData.acceleration.subVectors(newVelocity, controller.userData.velocity);
+                    controller.userData.velocity.copy(newVelocity);
                     controller.userData.previousPosition.copy(position);
                 }
+                
+                // Apply hand movement to rope end
+                this.applyHandToRope(controller, handedness);
             }
         });
+    }
+    
+    applyHandToRope(controller, handedness) {
+        if (!this.leftRope || !this.rightRope) return;
+        
+        const rope = handedness === 'left' ? this.leftRope : this.rightRope;
+        const ropeEndIndex = rope.particles.length - 1;
+        const ropeEnd = rope.particles[ropeEndIndex];
+        
+        // Get hand position and apply to rope end with some offset
+        const handPosition = controller.position.clone();
+        const targetPosition = new THREE.Vector3(
+            handPosition.x,
+            handPosition.y - 0.1, // Small offset below hand
+            handPosition.z
+        );
+        
+        // Apply force based on hand movement
+        if (controller.userData.acceleration) {
+            const force = controller.userData.acceleration.clone().multiplyScalar(100);
+            ropeEnd.addForce(force);
+        }
+        
+        // Constrain rope end to follow hand position (not too rigidly)
+        const distance = ropeEnd.position.distanceTo(targetPosition);
+        if (distance > 0.2) { // Max distance before rope "snaps" to hand
+            const direction = new THREE.Vector3().subVectors(targetPosition, ropeEnd.position).normalize();
+            ropeEnd.position.copy(targetPosition.clone().sub(direction.multiplyScalar(0.2)));
+        } else {
+            // Gentle pull towards hand
+            const pullForce = new THREE.Vector3().subVectors(targetPosition, ropeEnd.position).multiplyScalar(50);
+            ropeEnd.addForce(pullForce);
+        }
     }
 }
 
