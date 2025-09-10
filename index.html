@@ -66,12 +66,9 @@
     renderer.xr.enabled = true;
     document.body.appendChild(renderer.domElement);
 
-    // Soft light for a little shading on helpers (anchors/handles)
+    // Soft light
     const light = new THREE.HemisphereLight(0xffffff, 0x444444, 0.7);
     scene.add(light);
-
-    // ---------- AR button (only created after clicking start) ----------
-    let arButton = null;
 
     // ---------- Placement / hit test ----------
     let hitTestSource = null;
@@ -87,11 +84,10 @@
     reticle.visible = false;
     scene.add(reticle);
 
-    const baseRoot = new THREE.Group(); // base (the station root)
+    const baseRoot = new THREE.Group();
     baseRoot.visible = false;
     scene.add(baseRoot);
 
-    // Visual base plate
     const plate = new THREE.Mesh(
       new THREE.CylinderGeometry(0.25, 0.25, 0.02, 24),
       new THREE.MeshStandardMaterial({ color: 0x222222, metalness: 0.1, roughness: 0.7 })
@@ -99,7 +95,6 @@
     plate.position.y = 0.01;
     baseRoot.add(plate);
 
-    // Anchors (left/right) placed 0.3 m apart on X axis, relative to base
     const anchorLeft  = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.06, 16), new THREE.MeshStandardMaterial({ color: 0x5555ff }));
     const anchorRight = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.06, 16), new THREE.MeshStandardMaterial({ color: 0xff5555 }));
     anchorLeft.position.set(-0.3, 0.03, 0);
@@ -119,7 +114,6 @@
     controller0.add(leftHandleVis);
     controller1.add(rightHandleVis);
 
-    // Optional: hands (if available) → we'll prefer them when joints are valid
     const hand0 = renderer.xr.getHand ? renderer.xr.getHand(0) : null;
     const hand1 = renderer.xr.getHand ? renderer.xr.getHand(1) : null;
     if (hand0) scene.add(hand0);
@@ -128,91 +122,59 @@
     // ---------- Simple rope as dynamic line ----------
     class RopeLine {
       constructor(getStartFn, getEndFn, color = 0xffffff, segments = 32) {
-        this.getStartFn = getStartFn; // typically: hand position
-        this.getEndFn = getEndFn;     // typically: anchor position
+        this.getStartFn = getStartFn;
+        this.getEndFn = getEndFn;
         this.segments = segments;
-
         this.positions = new Float32Array((segments + 1) * 3);
         this.geom = new THREE.BufferGeometry();
         this.geom.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
         this.line = new THREE.Line(this.geom, new THREE.LineBasicMaterial({ color }));
         scene.add(this.line);
-
         this._prevY = null;
         this._velY = 0;
-        this._amp = 0;   // driven by hand velocity
-        this._phase = 0; // wave phase
+        this._amp = 0;
+        this._phase = 0;
       }
-
       get amplitude() { return this._amp; }
-
       update(dt) {
-        // update amplitude from hand vertical velocity
         const start = new THREE.Vector3();
         const end = new THREE.Vector3();
         this.getStartFn(start);
         this.getEndFn(end);
-
-        // compute vertical velocity of the hand/controller
         const curY = start.y;
         if (this._prevY == null) this._prevY = curY;
         const vy = (curY - this._prevY) / Math.max(dt, 1e-4);
         this._prevY = curY;
-
-        // smooth
         this._velY = THREE.MathUtils.lerp(this._velY, vy, 0.2);
-
-        // inject impulse from velocity (clamped)
         const add = THREE.MathUtils.clamp(Math.abs(this._velY) * 0.08, 0, 0.25);
         this._amp = Math.min(0.35, this._amp * Math.pow(0.985, dt * 60) + add);
-
-        // wave runs from start (hand) → end (anchor)
-        this._phase += dt * 6.0; // wave speed
-
-        // build line points along a slightly sagging curve + vertical wave
+        this._phase += dt * 6.0;
         const dir = new THREE.Vector3().subVectors(end, start);
         const len = dir.length();
         if (len < 1e-5) return;
-        const up = new THREE.Vector3(0,1,0);
-
         for (let i = 0; i <= this.segments; i++) {
           const t = i / this.segments;
-          // baseline point along straight line
           const p = new THREE.Vector3().copy(start).addScaledVector(dir, t);
-          // sag (parabolic) downward proportional to length and t*(1-t)
           const sag = -0.12 * len * t * (1 - t);
-          // traveling wave vertical offset (decaying toward anchor)
-          const decay = (1 - t) * 1.0 + 0.2; // stronger near hand
+          const decay = (1 - t) * 1.0 + 0.2;
           const w = Math.sin((t * 2 * Math.PI * 1.3) - this._phase) * this._amp * decay;
-
           p.y += sag + w;
-
           const idx = i * 3;
           this.positions[idx]   = p.x;
           this.positions[idx+1] = p.y;
           this.positions[idx+2] = p.z;
         }
-
         this.geom.attributes.position.needsUpdate = true;
       }
     }
 
-    // helpers to get world positions of controllers or hands
+    // helpers
     const _tmp = new THREE.Vector3();
-    function getControllerWorldPos(ctrl, out) {
-      ctrl.getWorldPosition(out);
-      return out;
-    }
-
+    function getControllerWorldPos(ctrl, out) { ctrl.getWorldPosition(out); return out; }
     function getHandJointWorldPos(hand, jointName, out) {
-      if (!hand) return null;
-      const j = hand.joints?.[jointName];
-      if (!j) return null;
-      j.getWorldPosition(out);
-      return out;
+      if (!hand) return null; const j = hand.joints?.[jointName]; if (!j) return null; j.getWorldPosition(out); return out;
     }
 
-    // We'll create ropes after placement
     let leftRope = null;
     let rightRope = null;
 
@@ -223,69 +185,118 @@
 
     function setStatus(s) { statusEl.textContent = 'STATUS: ' + s; }
 
+    // ---------- Emulator-friendly fallback (no camera feed, no hit results) ----------
+    const url = new URL(location.href);
+    const forceDebug = url.searchParams.has('debug');
+    let useFallbackGround = false;
+    let noHitFrames = 0;
+    const NO_HIT_THRESHOLD = 30; // ~0.5s
+
+    let gridHelper = null;
+    function enableFallbackGround() {
+      if (useFallbackGround) return;
+      useFallbackGround = true;
+      reticle.matrixAutoUpdate = true; // we'll position it manually
+      // Simple ground grid for orientation (y=0 plane)
+      gridHelper = new THREE.GridHelper(6, 12, 0x666666, 0x333333);
+      gridHelper.position.y = 0;
+      scene.add(gridHelper);
+      setStatus('PLACE (FALLBACK)');
+      ampEl.textContent = 'Amp: 0.00';
+    }
+
+    // Position reticle by casting camera forward onto y=0 plane
+    const camDir = new THREE.Vector3();
+    function updateFallbackReticle() {
+      if (placed) return;
+      const cp = camera.position.clone();
+      camera.getWorldDirection(camDir); // -Z forward
+      const denom = camDir.y;
+      let t = 0;
+      if (Math.abs(denom) > 1e-3) {
+        t = (0 - cp.y) / denom; // intersection with y=0
+      }
+      if (!isFinite(t) || t <= 0) t = 1.5; // 1.5m straight ahead
+      const pos = cp.clone().addScaledVector(camDir, t);
+      reticle.visible = true;
+      reticle.position.copy(pos);
+      reticle.rotation.set(-Math.PI/2, 0, 0);
+    }
+
     // ---------- Session events ----------
     async function onSessionStart(session) {
       const xr = renderer.xr;
-      viewerSpace = await session.requestReferenceSpace('viewer');
-      localSpace  = xr.getReferenceSpace();
+      try {
+        // prefer local-floor if available
+        localSpace = await session.requestReferenceSpace('local-floor').catch(()=>xr.getReferenceSpace());
+      } catch {
+        localSpace = xr.getReferenceSpace();
+      }
+      try {
+        viewerSpace = await session.requestReferenceSpace('viewer');
+      } catch {
+        viewerSpace = null;
+      }
 
-      // Hit test source
-      hitTestSource = await session.requestHitTestSource({ space: viewerSpace });
+      // try hit test source (may fail in emulator)
+      try {
+        if (session.requestHitTestSource && viewerSpace) {
+          hitTestSource = await session.requestHitTestSource({ space: viewerSpace });
+        }
+      } catch (e) {
+        hitTestSource = null;
+      }
 
       setStatus('PLACE STATION');
       hintEl.style.display = 'block';
 
-      // controller select to place
       const onSelect = () => {
         if (!placed && reticle.visible) {
-          // position baseRoot at reticle
-          baseRoot.matrix.copy(reticle.matrix);
-          baseRoot.matrix.decompose(baseRoot.position, baseRoot.quaternion, baseRoot.scale);
+          if (reticle.matrixAutoUpdate) {
+            baseRoot.position.copy(reticle.position);
+            baseRoot.quaternion.copy(reticle.quaternion);
+            baseRoot.scale.set(1,1,1);
+          } else {
+            baseRoot.matrix.copy(reticle.matrix);
+            baseRoot.matrix.decompose(baseRoot.position, baseRoot.quaternion, baseRoot.scale);
+          }
           baseRoot.visible = true;
           placed = true;
           setStatus('READY — STARTING');
           hintEl.style.display = 'none';
 
-          // Create ropes: anchors are children of baseRoot (left/right)
           leftRope = new RopeLine(
-            // start: left hand/controller
-            (out)=>{
-              // prefer hand wrist if available
-              const p = getHandJointWorldPos(hand0, 'wrist', out);
-              if (p) return p;
-              return getControllerWorldPos(controller0, out);
-            },
-            // end: left anchor
+            (out)=>{ const p = getHandJointWorldPos(hand0, 'wrist', out); return p ? p : getControllerWorldPos(controller0, out); },
             (out)=>anchorLeft.getWorldPosition(out),
             0x99bbff, 40
           );
-
           rightRope = new RopeLine(
-            (out)=>{
-              const p = getHandJointWorldPos(hand1, 'wrist', out);
-              if (p) return p;
-              return getControllerWorldPos(controller1, out);
-            },
+            (out)=>{ const p = getHandJointWorldPos(hand1, 'wrist', out); return p ? p : getControllerWorldPos(controller1, out); },
             (out)=>anchorRight.getWorldPosition(out),
             0xff99aa, 40
           );
 
-          // Start timer after short grace period
           setTimeout(()=>{ workoutActive = true; setStatus('WORKOUT'); }, 800);
         }
       };
 
       controller0.addEventListener('select', onSelect);
       controller1.addEventListener('select', onSelect);
+      // Emulator convenience: press ENTER to place
+      window.addEventListener('keydown', (e)=>{ if (e.key === 'Enter') onSelect(); });
 
       session.addEventListener('end', () => {
-        // cleanup
         hitTestSource = null; viewerSpace = null; localSpace = null; placed = false; workoutActive = false; timeLeft = 60; score = 0;
         baseRoot.visible = false; setStatus('READY');
         if (leftRope) { scene.remove(leftRope.line); leftRope = null; }
         if (rightRope){ scene.remove(rightRope.line); rightRope = null; }
+        if (gridHelper){ scene.remove(gridHelper); gridHelper = null; }
+        reticle.visible = false; reticle.matrixAutoUpdate = false;
         hintEl.style.display = 'block';
       });
+
+      // Force fallback if requested via URL
+      if (forceDebug) enableFallbackGround();
     }
 
     // ---------- Render loop ----------
@@ -294,7 +305,7 @@
       const dt = Math.min(0.05, (time - lastTime) / 1000) || 0.016;
       lastTime = time;
 
-      if (frame && !placed && hitTestSource) {
+      if (frame && !placed && hitTestSource && !useFallbackGround) {
         const refSpace = localSpace || renderer.xr.getReferenceSpace();
         const hitResults = frame.getHitTestResults(hitTestSource);
         if (hitResults.length > 0) {
@@ -302,35 +313,35 @@
           const pose = hit.getPose(refSpace);
           if (pose) {
             reticle.visible = true;
+            reticle.matrixAutoUpdate = false;
             reticle.matrix.fromArray(pose.transform.matrix);
+            noHitFrames = 0;
           }
         } else {
+          noHitFrames++;
+          if (noHitFrames > NO_HIT_THRESHOLD) enableFallbackGround();
           reticle.visible = false;
         }
       }
 
-      // update ropes
+      if (!placed && useFallbackGround) {
+        updateFallbackReticle();
+      }
+
       if (leftRope) leftRope.update(dt);
       if (rightRope) rightRope.update(dt);
 
-      // scoring
-      let ampAvg = 0;
-      let ropeCount = 0;
+      let ampAvg = 0; let ropeCount = 0;
       if (leftRope) { ampAvg += leftRope.amplitude; ropeCount++; }
       if (rightRope){ ampAvg += rightRope.amplitude; ropeCount++; }
       if (ropeCount > 0) ampAvg /= ropeCount;
 
       if (workoutActive) {
         timeLeft -= dt;
-        if (timeLeft <= 0) {
-          workoutActive = false; timeLeft = 0; setStatus('DONE');
-        } else {
-          // award points per frame scaled by amplitude consistency
-          score += (ampAvg * 10) * dt * 60; // ~ per frame at 60 FPS
-        }
+        if (timeLeft <= 0) { workoutActive = false; timeLeft = 0; setStatus('DONE'); }
+        else { score += (ampAvg * 10) * dt * 60; }
       }
 
-      // UI
       timerEl.textContent = '00:' + String(Math.max(0, Math.round(timeLeft))).padStart(2, '0');
       scoreEl.textContent = 'Score: ' + Math.floor(score);
       ampEl.textContent   = 'Amp: ' + ampAvg.toFixed(2);
@@ -339,20 +350,18 @@
     });
 
     // ---------- Start flow ----------
+    let arButton = null;
     startBtn.addEventListener('click', () => {
-      // create AR Button on demand with required features
       if (!arButton) {
+        // Make hit-test optional so emulator/unsupported devices can still start
         arButton = ARButton.createButton(renderer, {
-          requiredFeatures: ['hit-test'],
-          optionalFeatures: ['dom-overlay','hand-tracking'],
+          optionalFeatures: ['hit-test','dom-overlay','hand-tracking'],
           domOverlay: { root: document.body }
         });
         document.getElementById('footer').appendChild(arButton);
       }
       startOverlay.style.display = 'none';
-
-      // When session starts, configure hit test etc.
-      renderer.xr.addEventListener('sessionstart', (e) => onSessionStart(renderer.xr.getSession()));
+      renderer.xr.addEventListener('sessionstart', () => onSessionStart(renderer.xr.getSession()));
     });
 
     // ---------- Resize ----------
