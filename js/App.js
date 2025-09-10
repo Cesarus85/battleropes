@@ -95,8 +95,12 @@ export class App {
         const session = this.xrManager.session;
         if (!session) return;
 
-        // XR Render Loop
-        session.requestAnimationFrame((time, frame) => this.render(time, frame));
+        // Three.js WebXR Animation Loop verwenden
+        this.sceneManager.renderer.setAnimationLoop((time, frame) => {
+            this.render(time, frame);
+        });
+        
+        console.log('Render Loop gestartet');
     }
 
     render(time, frame) {
@@ -105,27 +109,26 @@ export class App {
         this.frameCount++;
         
         // Update Debug Info
-        this.debugUI.updateFPS(time);
+        this.debugUI.updateFPS(time || performance.now());
         this.debugUI.updateFrameCount(this.frameCount);
 
         // Update Hand Tracking
         const handData = this.handTracker.update(frame);
         this.debugUI.updateHandsStatus(handData);
 
-        // Update Scene (Lichter, Objekte, etc.)
-        this.sceneManager.update(time, handData);
+        // Update Scene
+        this.sceneManager.update(time || performance.now(), handData);
 
-        // Render Scene
-        this.xrManager.render(frame, this.sceneManager.scene, this.sceneManager.camera);
-
-        // Continue loop
-        if (this.xrManager.session) {
-            this.xrManager.session.requestAnimationFrame((time, frame) => this.render(time, frame));
-        }
+        // Three.js rendert automatisch wenn xr.enabled = true
+        this.sceneManager.renderer.render(
+            this.sceneManager.scene, 
+            this.sceneManager.camera
+        );
     }
 
     stop() {
         this.isRunning = false;
+        this.sceneManager.renderer.setAnimationLoop(null);
         this.xrManager.endSession();
         this.debugUI.updateSessionStatus('Beendet');
         console.log('🛑 AR Session beendet');
