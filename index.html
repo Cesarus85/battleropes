@@ -121,20 +121,30 @@
 
     // ---------- Rope as 3D tube (TubeGeometry) ----------
     class RopeTube {
-      constructor(getStartFn, getEndFn, color = 0xffffff, segments = 24, radius = 0.018, radialSegments = 8) {
+      constructor(getStartFn, getEndFn, color = 0xffffff, segments = 24, radius = 0.03, radialSegments = 12, showGuide = true) {
         this.getStartFn = getStartFn;
         this.getEndFn = getEndFn;
         this.segments = segments;
         this.radius = radius;
         this.radialSegments = radialSegments;
+        this.showGuide = showGuide;
 
-        // points used for the curve; reused each frame
         this.points = new Array(segments + 1).fill(0).map(() => new THREE.Vector3());
         this.curve = new THREE.CatmullRomCurve3(this.points, false, 'catmullrom', 0.25);
-        this.geom = new THREE.TubeGeometry(this.curve, segments * 2, radius, radialSegments, false);
-        this.mat  = new THREE.MeshStandardMaterial({ color, metalness: 0.15, roughness: 0.6 });
+        this.geom = new THREE.TubeGeometry(this.curve, Math.max(8, segments * 3), radius, radialSegments, false);
+        this.mat  = new THREE.MeshStandardMaterial({ color, metalness: 0.2, roughness: 0.55, emissive: 0x222222, side: THREE.DoubleSide });
         this.mesh = new THREE.Mesh(this.geom, this.mat);
+        this.mesh.renderOrder = 1;
         scene.add(this.mesh);
+
+        // optional visible centerline for debugging/visibility
+        this.guidePositions = new Float32Array((segments + 1) * 3);
+        this.guideGeom = new THREE.BufferGeometry();
+        this.guideGeom.setAttribute('position', new THREE.BufferAttribute(this.guidePositions, 3));
+        this.guideMat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.9 });
+        this.guide = new THREE.Line(this.guideGeom, this.guideMat);
+        this.guide.visible = !!showGuide;
+        scene.add(this.guide);
 
         this._prevY = null;
         this._velY = 0;
@@ -142,16 +152,16 @@
         this._phase = 0;
       }
 
+      setGuideVisible(v){ this.guide.visible = !!v; }
+
       get amplitude() { return this._amp; }
 
       update(dt) {
-        // sample start/end
         const start = new THREE.Vector3();
         const end = new THREE.Vector3();
         this.getStartFn(start);
         this.getEndFn(end);
 
-        // vertical velocity based amplitude
         const curY = start.y;
         if (this._prevY == null) this._prevY = curY;
         const vy = (curY - this._prevY) / Math.max(dt, 1e-4);
@@ -161,7 +171,6 @@
         this._amp = Math.min(0.35, this._amp * Math.pow(0.985, dt * 60) + add);
         this._phase += dt * 6.0;
 
-        // construct rope centerline points with sag + traveling wave
         const dir = new THREE.Vector3().subVectors(end, start);
         const len = dir.length();
         if (len < 1e-5) return;
@@ -174,19 +183,25 @@
           const decay = (1 - t) * 1.0 + 0.2;
           const w = Math.sin((t * 2 * Math.PI * 1.3) - this._phase) * this._amp * decay;
           p.y += sag + w;
+          // update guide buffer too
+          const idx = i * 3;
+          this.guidePositions[idx]   = p.x;
+          this.guidePositions[idx+1] = p.y;
+          this.guidePositions[idx+2] = p.z;
         }
+        this.guideGeom.attributes.position.needsUpdate = true;
 
-        // rebuild tube geometry (segments kept small for perf)
+        // rebuild tube geometry
         this.curve.points = this.points;
         this.geom.dispose();
-        this.geom = new THREE.TubeGeometry(this.curve, this.segments * 2, this.radius, this.radialSegments, false);
+        this.geom = new THREE.TubeGeometry(this.curve, Math.max(8, this.segments * 3), this.radius, this.radialSegments, false);
         this.mesh.geometry = this.geom;
       }
 
       dispose() {
-        scene.remove(this.mesh);
-        this.geom.dispose();
-        this.mat.dispose();
+        scene.remove(this.mesh); scene.remove(this.guide);
+        this.geom.dispose(); this.mat.dispose();
+        this.guideGeom.dispose(); this.guideMat.dispose();
       }
     }
 
@@ -286,10 +301,16 @@
           leftRope = new RopeTube(
             (out)=>{ const p = getHandJointWorldPos(hand0, 'wrist', out); return p ? p : getControllerWorldPos(controller0, out); },
             (out)=>anchorLeft.getWorldPosition(out),
+            0x99bbff, 24, 0.03, 12, true
+          ); return p ? p : getControllerWorldPos(controller0, out); },
+            (out)=>anchorLeft.getWorldPosition(out),
             0x99bbff, 24, 0.018, 8
           );
           rightRope = new RopeTube(
             (out)=>{ const p = getHandJointWorldPos(hand1, 'wrist', out); return p ? p : getControllerWorldPos(controller1, out); },
+            (out)=>anchorRight.getWorldPosition(out),
+            0xff99aa, 24, 0.03, 12, true
+          ); return p ? p : getControllerWorldPos(controller1, out); },
             (out)=>anchorRight.getWorldPosition(out),
             0xff99aa, 24, 0.018, 8
           );
@@ -305,6 +326,20 @@
       session.addEventListener('end', () => {
         hitTestSource = null; viewerSpace = null; localSpace = null; placed = false; workoutActive = false; timeLeft = 60; score = 0;
         baseRoot.visible = false; setStatus('READY');
+        if (leftRope) { leftRope.dispose(); leftRope = null; }
+        if (rightRope){ rightRope.dispose(); rightRope = null; }
+        if (gridHelper){ scene.remove(gridHelper); gridHelper = null; }
+        reticle.visible = false; reticle.matrixAutoUpdate = false;
+        hintEl.style.display = 'block';
+      });
+
+      // quick toggle for guide lines
+      window.addEventListener('keydown', (e)=>{
+        if (e.key.toLowerCase() === 'g') {
+          if (leftRope) leftRope.setGuideVisible(!leftRope.guide.visible);
+          if (rightRope) rightRope.setGuideVisible(!rightRope.guide.visible);
+        }
+      });
         if (leftRope) { leftRope.dispose(); leftRope = null; }
         if (rightRope){ rightRope.dispose(); rightRope = null; }
         if (gridHelper){ scene.remove(gridHelper); gridHelper = null; }
