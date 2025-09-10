@@ -127,27 +127,8 @@ export class XRManager {
     }
 
     render(frame, scene, camera) {
-        if (!this.session || !frame) return;
-
-        const pose = frame.getViewerPose(this.referenceSpace);
-        
-        if (pose) {
-            // Update camera from XR pose
-            const view = pose.views[0];
-            
-            if (view) {
-                const viewport = this.session.renderState.baseLayer.getViewport(view);
-                this.renderer.setViewport(viewport.x, viewport.y, viewport.width, viewport.height);
-                
-                // Update camera matrices
-                camera.matrix.fromArray(view.transform.matrix);
-                camera.projectionMatrix.fromArray(view.projectionMatrix);
-                camera.updateMatrixWorld(true);
-                
-                // Render scene
-                this.renderer.render(scene, camera);
-            }
-        }
+        // Renderer übernimmt das Rendering automatisch
+        // Nichts manuelles nötig, wenn xr.enabled = true
     }
 
     async endSession() {
