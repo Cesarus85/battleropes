@@ -1,5 +1,3 @@
-import * as THREE from 'three';
-
 class BattleRopesAR {
     constructor() {
         this.scene = null;
