@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Battle Ropes AR — Starter</title>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    #hud { position: fixed; inset: 0; pointer-events: none; display: grid; grid-template-rows: auto 1fr auto; }
+    #topbar { display: flex; gap: 12px; align-items: center; justify-content: center; padding: 8px 12px; }
+    .pill { background: rgba(0,0,0,0.55); color: #fff; border-radius: 999px; padding: 6px 12px; font-weight: 600; font-size: 14px; letter-spacing: .3px; }
+    #footer { display:flex; justify-content:center; padding: 8px; }
+    #hint { pointer-events: none; position: fixed; left: 50%; transform: translateX(-50%); bottom: 88px; background: rgba(0,0,0,0.55); color:#fff; padding: 10px 14px; border-radius: 12px; font-size: 14px; }
+    #help { position: fixed; right: 8px; bottom: 8px; background: rgba(0,0,0,0.55); color:#fff; padding: 8px 10px; border-radius: 10px; font-size: 12px; line-height: 1.2; max-width: 280px; }
+    #startOverlay { position: fixed; inset: 0; display: grid; place-items: center; background: linear-gradient(180deg, rgba(10,10,10,.9), rgba(10,10,10,.6)); color: white; text-align: center; }
+    #startOverlay .card { pointer-events: auto; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.18); padding: 18px 16px; border-radius: 16px; max-width: 520px; }
+    #startOverlay h1 { margin: 0 0 8px; font-size: 22px; }
+    #startOverlay p { margin: 6px 0; opacity: .9; }
+    #startOverlay button { margin-top: 10px; padding: 10px 14px; border-radius: 12px; font-weight: 700; border: none; background: white; color: black; cursor: pointer; }
+    .ok { color: #9ef59e }
+    canvas { display:block; }
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <div id="topbar">
+      <div class="pill" id="status">STATUS: READY</div>
+      <div class="pill" id="timer">00:60</div>
+      <div class="pill" id="score">Score: 0</div>
+      <div class="pill" id="amp">Amp: 0.00</div>
+    </div>
+    <div></div>
+    <div id="footer"></div>
+  </div>
+  <div id="hint">Blick auf Boden richten und <b>Trigger drücken</b>, um die Station zu platzieren.</div>
+  <div id="help">Steuerung:<br/>• Trigger = Platzieren<br/>• Rechte Hand/Controller = rechte Rope-Ende<br/>• Linke Hand/Controller = linke Rope-Ende<br/>• 60s Intervall. Punkte = Amplituden-Konsistenz</div>
+  <div id="startOverlay">
+    <div class="card">
+      <h1>Battle Ropes AR — Starter</h1>
+      <p>Platziere eine Anker-Basis per Reticle auf dem Boden. Nach der Platzierung starten 60 Sekunden Workout.</p>
+      <p>Optional: Hand-Tracking wird versucht, Controller werden voll unterstützt.</p>
+      <button id="startBtn">Start vorbereiten</button>
+      <p style="font-size:12px;opacity:.7;margin-top:8px">Benötigt: Quest 3/3S Browser, HTTPS, WebXR AR, Hit-Test. Drei.js r160 via CDN.</p>
+    </div>
+  </div>
+
+  <script type="module">
+    import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+    import { ARButton } from 'https://unpkg.com/three@0.160.0/examples/jsm/webxr/ARButton.js';
+
+    // ---------- DOM refs ----------
+    const statusEl = document.getElementById('status');
+    const timerEl  = document.getElementById('timer');
+    const scoreEl  = document.getElementById('score');
+    const ampEl    = document.getElementById('amp');
+    const hintEl   = document.getElementById('hint');
+    const startOverlay = document.getElementById('startOverlay');
+    const startBtn = document.getElementById('startBtn');
+
+    // ---------- Three.js/basic setup ----------
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.xr.enabled = true;
+    document.body.appendChild(renderer.domElement);
+
+    // Soft light for a little shading on helpers (anchors/handles)
+    const light = new THREE.HemisphereLight(0xffffff, 0x444444, 0.7);
+    scene.add(light);
+
+    // ---------- AR button (only created after clicking start) ----------
+    let arButton = null;
+
+    // ---------- Placement / hit test ----------
+    let hitTestSource = null;
+    let localSpace = null;
+    let viewerSpace = null;
+    let placed = false;
+
+    const reticle = new THREE.Mesh(
+      new THREE.RingGeometry(0.08, 0.1, 32).rotateX(-Math.PI/2),
+      new THREE.MeshBasicMaterial({ color: 0x00ffaa, transparent:true, opacity: 0.9 })
+    );
+    reticle.matrixAutoUpdate = false;
+    reticle.visible = false;
+    scene.add(reticle);
+
+    const baseRoot = new THREE.Group(); // base (the station root)
+    baseRoot.visible = false;
+    scene.add(baseRoot);
+
+    // Visual base plate
+    const plate = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.25, 0.25, 0.02, 24),
+      new THREE.MeshStandardMaterial({ color: 0x222222, metalness: 0.1, roughness: 0.7 })
+    );
+    plate.position.y = 0.01;
+    baseRoot.add(plate);
+
+    // Anchors (left/right) placed 0.3 m apart on X axis, relative to base
+    const anchorLeft  = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.06, 16), new THREE.MeshStandardMaterial({ color: 0x5555ff }));
+    const anchorRight = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.06, 16), new THREE.MeshStandardMaterial({ color: 0xff5555 }));
+    anchorLeft.position.set(-0.3, 0.03, 0);
+    anchorRight.position.set(0.3, 0.03, 0);
+    baseRoot.add(anchorLeft, anchorRight);
+
+    // ---------- Controllers & optional hands ----------
+    const controller0 = renderer.xr.getController(0);
+    const controller1 = renderer.xr.getController(1);
+    scene.add(controller0, controller1);
+
+    const handleGeom = new THREE.SphereGeometry(0.04, 16, 16);
+    const handleMatL  = new THREE.MeshStandardMaterial({ color: 0x3355ff });
+    const handleMatR  = new THREE.MeshStandardMaterial({ color: 0xff3355 });
+    const leftHandleVis  = new THREE.Mesh(handleGeom, handleMatL);
+    const rightHandleVis = new THREE.Mesh(handleGeom, handleMatR);
+    controller0.add(leftHandleVis);
+    controller1.add(rightHandleVis);
+
+    // Optional: hands (if available) → we'll prefer them when joints are valid
+    const hand0 = renderer.xr.getHand ? renderer.xr.getHand(0) : null;
+    const hand1 = renderer.xr.getHand ? renderer.xr.getHand(1) : null;
+    if (hand0) scene.add(hand0);
+    if (hand1) scene.add(hand1);
+
+    // ---------- Simple rope as dynamic line ----------
+    class RopeLine {
+      constructor(getStartFn, getEndFn, color = 0xffffff, segments = 32) {
+        this.getStartFn = getStartFn; // typically: hand position
+        this.getEndFn = getEndFn;     // typically: anchor position
+        this.segments = segments;
+
+        this.positions = new Float32Array((segments + 1) * 3);
+        this.geom = new THREE.BufferGeometry();
+        this.geom.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
+        this.line = new THREE.Line(this.geom, new THREE.LineBasicMaterial({ color }));
+        scene.add(this.line);
+
+        this._prevY = null;
+        this._velY = 0;
+        this._amp = 0;   // driven by hand velocity
+        this._phase = 0; // wave phase
+      }
+
+      get amplitude() { return this._amp; }
+
+      update(dt) {
+        // update amplitude from hand vertical velocity
+        const start = new THREE.Vector3();
+        const end = new THREE.Vector3();
+        this.getStartFn(start);
+        this.getEndFn(end);
+
+        // compute vertical velocity of the hand/controller
+        const curY = start.y;
+        if (this._prevY == null) this._prevY = curY;
+        const vy = (curY - this._prevY) / Math.max(dt, 1e-4);
+        this._prevY = curY;
+
+        // smooth
+        this._velY = THREE.MathUtils.lerp(this._velY, vy, 0.2);
+
+        // inject impulse from velocity (clamped)
+        const add = THREE.MathUtils.clamp(Math.abs(this._velY) * 0.08, 0, 0.25);
+        this._amp = Math.min(0.35, this._amp * Math.pow(0.985, dt * 60) + add);
+
+        // wave runs from start (hand) → end (anchor)
+        this._phase += dt * 6.0; // wave speed
+
+        // build line points along a slightly sagging curve + vertical wave
+        const dir = new THREE.Vector3().subVectors(end, start);
+        const len = dir.length();
+        if (len < 1e-5) return;
+        const up = new THREE.Vector3(0,1,0);
+
+        for (let i = 0; i <= this.segments; i++) {
+          const t = i / this.segments;
+          // baseline point along straight line
+          const p = new THREE.Vector3().copy(start).addScaledVector(dir, t);
+          // sag (parabolic) downward proportional to length and t*(1-t)
+          const sag = -0.12 * len * t * (1 - t);
+          // traveling wave vertical offset (decaying toward anchor)
+          const decay = (1 - t) * 1.0 + 0.2; // stronger near hand
+          const w = Math.sin((t * 2 * Math.PI * 1.3) - this._phase) * this._amp * decay;
+
+          p.y += sag + w;
+
+          const idx = i * 3;
+          this.positions[idx]   = p.x;
+          this.positions[idx+1] = p.y;
+          this.positions[idx+2] = p.z;
+        }
+
+        this.geom.attributes.position.needsUpdate = true;
+      }
+    }
+
+    // helpers to get world positions of controllers or hands
+    const _tmp = new THREE.Vector3();
+    function getControllerWorldPos(ctrl, out) {
+      ctrl.getWorldPosition(out);
+      return out;
+    }
+
+    function getHandJointWorldPos(hand, jointName, out) {
+      if (!hand) return null;
+      const j = hand.joints?.[jointName];
+      if (!j) return null;
+      j.getWorldPosition(out);
+      return out;
+    }
+
+    // We'll create ropes after placement
+    let leftRope = null;
+    let rightRope = null;
+
+    // Timing & scoring
+    let workoutActive = false;
+    let timeLeft = 60.0;
+    let score = 0;
+
+    function setStatus(s) { statusEl.textContent = 'STATUS: ' + s; }
+
+    // ---------- Session events ----------
+    async function onSessionStart(session) {
+      const xr = renderer.xr;
+      viewerSpace = await session.requestReferenceSpace('viewer');
+      localSpace  = xr.getReferenceSpace();
+
+      // Hit test source
+      hitTestSource = await session.requestHitTestSource({ space: viewerSpace });
+
+      setStatus('PLACE STATION');
+      hintEl.style.display = 'block';
+
+      // controller select to place
+      const onSelect = () => {
+        if (!placed && reticle.visible) {
+          // position baseRoot at reticle
+          baseRoot.matrix.copy(reticle.matrix);
+          baseRoot.matrix.decompose(baseRoot.position, baseRoot.quaternion, baseRoot.scale);
+          baseRoot.visible = true;
+          placed = true;
+          setStatus('READY — STARTING');
+          hintEl.style.display = 'none';
+
+          // Create ropes: anchors are children of baseRoot (left/right)
+          leftRope = new RopeLine(
+            // start: left hand/controller
+            (out)=>{
+              // prefer hand wrist if available
+              const p = getHandJointWorldPos(hand0, 'wrist', out);
+              if (p) return p;
+              return getControllerWorldPos(controller0, out);
+            },
+            // end: left anchor
+            (out)=>anchorLeft.getWorldPosition(out),
+            0x99bbff, 40
+          );
+
+          rightRope = new RopeLine(
+            (out)=>{
+              const p = getHandJointWorldPos(hand1, 'wrist', out);
+              if (p) return p;
+              return getControllerWorldPos(controller1, out);
+            },
+            (out)=>anchorRight.getWorldPosition(out),
+            0xff99aa, 40
+          );
+
+          // Start timer after short grace period
+          setTimeout(()=>{ workoutActive = true; setStatus('WORKOUT'); }, 800);
+        }
+      };
+
+      controller0.addEventListener('select', onSelect);
+      controller1.addEventListener('select', onSelect);
+
+      session.addEventListener('end', () => {
+        // cleanup
+        hitTestSource = null; viewerSpace = null; localSpace = null; placed = false; workoutActive = false; timeLeft = 60; score = 0;
+        baseRoot.visible = false; setStatus('READY');
+        if (leftRope) { scene.remove(leftRope.line); leftRope = null; }
+        if (rightRope){ scene.remove(rightRope.line); rightRope = null; }
+        hintEl.style.display = 'block';
+      });
+    }
+
+    // ---------- Render loop ----------
+    let lastTime = 0;
+    renderer.setAnimationLoop((time, frame) => {
+      const dt = Math.min(0.05, (time - lastTime) / 1000) || 0.016;
+      lastTime = time;
+
+      if (frame && !placed && hitTestSource) {
+        const refSpace = localSpace || renderer.xr.getReferenceSpace();
+        const hitResults = frame.getHitTestResults(hitTestSource);
+        if (hitResults.length > 0) {
+          const hit = hitResults[0];
+          const pose = hit.getPose(refSpace);
+          if (pose) {
+            reticle.visible = true;
+            reticle.matrix.fromArray(pose.transform.matrix);
+          }
+        } else {
+          reticle.visible = false;
+        }
+      }
+
+      // update ropes
+      if (leftRope) leftRope.update(dt);
+      if (rightRope) rightRope.update(dt);
+
+      // scoring
+      let ampAvg = 0;
+      let ropeCount = 0;
+      if (leftRope) { ampAvg += leftRope.amplitude; ropeCount++; }
+      if (rightRope){ ampAvg += rightRope.amplitude; ropeCount++; }
+      if (ropeCount > 0) ampAvg /= ropeCount;
+
+      if (workoutActive) {
+        timeLeft -= dt;
+        if (timeLeft <= 0) {
+          workoutActive = false; timeLeft = 0; setStatus('DONE');
+        } else {
+          // award points per frame scaled by amplitude consistency
+          score += (ampAvg * 10) * dt * 60; // ~ per frame at 60 FPS
+        }
+      }
+
+      // UI
+      timerEl.textContent = '00:' + String(Math.max(0, Math.round(timeLeft))).padStart(2, '0');
+      scoreEl.textContent = 'Score: ' + Math.floor(score);
+      ampEl.textContent   = 'Amp: ' + ampAvg.toFixed(2);
+
+      renderer.render(scene, camera);
+    });
+
+    // ---------- Start flow ----------
+    startBtn.addEventListener('click', () => {
+      // create AR Button on demand with required features
+      if (!arButton) {
+        arButton = ARButton.createButton(renderer, {
+          requiredFeatures: ['hit-test'],
+          optionalFeatures: ['dom-overlay','hand-tracking'],
+          domOverlay: { root: document.body }
+        });
+        document.getElementById('footer').appendChild(arButton);
+      }
+      startOverlay.style.display = 'none';
+
+      // When session starts, configure hit test etc.
+      renderer.xr.addEventListener('sessionstart', (e) => onSessionStart(renderer.xr.getSession()));
+    });
+
+    // ---------- Resize ----------
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+</html>
