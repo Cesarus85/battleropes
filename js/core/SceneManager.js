@@ -1,5 +1,7 @@
 // js/core/SceneManager.js
 
+import * as THREE from 'three';
+
 export class SceneManager {
     constructor(canvas) {
         this.canvas = canvas;
