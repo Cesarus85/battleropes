@@ -125,8 +125,8 @@
         this.getStartFn = getStartFn;
         this.getEndFn = getEndFn;
         this.segments = (typeof segments === 'number') ? segments : 24;
-        this.radius = (typeof radius === 'number') ? radius : 0.03;
-        this.radialSegments = (typeof radialSegments === 'number') ? radialSegments : 12;
+        this.radius = (typeof radius === 'number') ? radius : 0.06; // thicker rope (~6 cm radius)
+        this.radialSegments = (typeof radialSegments === 'number') ? radialSegments : 14;
         this.showGuide = !!showGuide;
         if (typeof color !== 'number') color = 0xffffff;
 
@@ -165,10 +165,12 @@
         if (this._prevY === null) this._prevY = curY;
         const vy = (curY - this._prevY) / Math.max(dt, 1e-4);
         this._prevY = curY;
-        this._velY = THREE.MathUtils.lerp(this._velY, vy, 0.2);
-        const add = THREE.MathUtils.clamp(Math.abs(this._velY) * 0.08, 0, 0.25);
-        this._amp = Math.min(0.35, this._amp * Math.pow(0.985, dt * 60) + add);
-        this._phase += dt * 6.0;
+        this._velY = THREE.MathUtils.lerp(this._velY, vy, 0.18);
+        // Heavier-feel: small impulse + stronger damping
+        const impulse = Math.min(0.12, Math.abs(this._velY) * 0.02);
+        this._amp = Math.max(0, this._amp - 3.5 * dt); // fast decay
+        this._amp = Math.min(0.25, this._amp + impulse);
+        this._phase += dt * 5.0;
 
         const dir = new THREE.Vector3().subVectors(end, start);
         const len = dir.length();
@@ -286,15 +288,27 @@
           setStatus('READY — STARTING');
           hintEl.style.display = 'none';
 
+          // Map controllers to left/right relative to base at placement time
+          const _c0p = new THREE.Vector3();
+          const _c1p = new THREE.Vector3();
+          controller0.getWorldPosition(_c0p);
+          controller1.getWorldPosition(_c1p);
+          const _c0l = _c0p.clone();
+          const _c1l = _c1p.clone();
+          baseRoot.worldToLocal(_c0l);
+          baseRoot.worldToLocal(_c1l);
+          const leftCtrl  = (_c0l.x <= _c1l.x) ? controller0 : controller1;
+          const rightCtrl = (leftCtrl === controller0) ? controller1 : controller0;
+
           leftRope = new RopeTube(
-            function(out){ var p = getHandJointWorldPos(hand0, 'wrist', out); return p ? p : getControllerWorldPos(controller0, out); },
+            function(out){ return getControllerWorldPos(leftCtrl, out); },
             function(out){ return anchorLeft.getWorldPosition(out); },
-            0x99bbff, 24, 0.03, 12, true
+            0x99bbff, 24, 0.06, 14, true
           );
           rightRope = new RopeTube(
-            function(out){ var p = getHandJointWorldPos(hand1, 'wrist', out); return p ? p : getControllerWorldPos(controller1, out); },
+            function(out){ return getControllerWorldPos(rightCtrl, out); },
             function(out){ return anchorRight.getWorldPosition(out); },
-            0xff99aa, 24, 0.03, 12, true
+            0xff99aa, 24, 0.06, 14, true
           );
 
           setTimeout(function(){ workoutActive = true; setStatus('WORKOUT'); }, 800);
