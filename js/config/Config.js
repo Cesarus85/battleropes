@@ -1,5 +1,7 @@
 // js/config/Config.js
 
+import * as THREE from 'three';
+
 export class Config {
     constructor() {
         // WebXR Settings
