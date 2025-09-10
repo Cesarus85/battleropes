@@ -1,3 +1,7 @@
+// js/input/HandTracker.js
+
+import * as THREE from 'three';
+
 export class HandTracker {
     constructor() {
         this.session = null;
@@ -79,19 +83,6 @@ export class HandTracker {
             }
         }
     }
-
-    getHandSpeed(handedness) {
-        return this.hands[handedness].velocity.length();
-    }
-
-    getHandAcceleration(handedness) {
-        return this.hands[handedness].acceleration.length();
-    }
-
-    isHandDetected(handedness) {
-        return this.hands[handedness].detected;
-    }
-}
 
     update(frame) {
         if (!frame || !this.session) return this.hands;
@@ -182,3 +173,29 @@ export class HandTracker {
             }
         }
     }
+
+    getHandSpeed(handedness) {
+        return this.hands[handedness].velocity.length();
+    }
+
+    getHandAcceleration(handedness) {
+        return this.hands[handedness].acceleration.length();
+    }
+
+    isHandDetected(handedness) {
+        return this.hands[handedness].detected;
+    }
+
+    reset() {
+        for (const hand of Object.values(this.hands)) {
+            hand.detected = false;
+            hand.position.set(0, 0, 0);
+            hand.velocity.set(0, 0, 0);
+            hand.acceleration.set(0, 0, 0);
+            hand.prevPosition.set(0, 0, 0);
+            hand.prevVelocity.set(0, 0, 0);
+            hand.joints = {};
+            hand.inputSource = null;
+        }
+    }
+}
